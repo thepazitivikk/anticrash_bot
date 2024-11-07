@@ -1,2 +1,5 @@
-# anticrash_bot
-ANTI-CRASH bot for discord
+# Инструкция по установке
+
+1) Скачайте файл
+2) Загрузите все необходимые библеотеки с requirements.txt
+3) Замените токен в config.py
