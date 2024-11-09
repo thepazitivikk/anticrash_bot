@@ -1,11 +1,11 @@
 import discord
-from discord import guild
-from discord.ext import commands
+from discord.ext import commands, tasks
 import sqlite3
 import json
 import logging
 import config
 import message
+import asyncio
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -29,7 +29,9 @@ def load_limits():
             "channel_edit": 10,
             "channel_delete": 5,
             "role_create": 5,
-            "channel_create": 5
+            "channel_create": 5,
+            "bot_add_limit": 3,
+            "webhook_create": 3
         }
         save_limits(default_limits)
         return default_limits
@@ -44,6 +46,7 @@ def save_whitelist():
     with open("config.py", "w") as file:
         file.write(f"TOKEN = '{config.TOKEN}'\n")
         file.write(f"WHITELIST = {config.WHITELIST}\n")
+        file.write(f"ROLE_WHITELIST = {config.ROLE_WHITELIST}\n")
 
 async def check_user_limit(guild, user_id, action_type):
     if user_id in config.WHITELIST:
@@ -57,11 +60,11 @@ async def check_user_limit(guild, user_id, action_type):
     row = c.fetchone()
 
     if row:
-        role_changes, channel_edits, channel_deletions, role_creations, channel_creations = row[1:]
+        role_changes, channel_edits, channel_deletions, role_creations, channel_creations, bot_adds, webhook_creates = row[1:]
     else:
         c.execute("INSERT INTO user_actions (user_id) VALUES (?)", (user_id,))
         conn.commit()
-        role_changes, channel_edits, channel_deletions, role_creations, channel_creations = 0, 0, 0, 0, 0
+        role_changes, channel_edits, channel_deletions, role_creations, channel_creations, bot_adds, webhook_creates = 0, 0, 0, 0, 0, 0, 0
 
     member = guild.get_member(user_id)
 
@@ -90,10 +93,20 @@ async def check_user_limit(guild, user_id, action_type):
         if channel_creations >= limits["channel_create"] and guild.me.guild_permissions.kick_members:
             await guild.kick(member, reason=message.KICK_MESSAGES["channel_create_limit_exceeded"])
             logging.info(f"User {user_id} kicked for exceeding channel creation limit")
+    elif action_type == "bot_add":
+        bot_adds += 1
+        if bot_adds >= limits["bot_add_limit"] and guild.me.guild_permissions.kick_members:
+            await guild.kick(member, reason=message.KICK_MESSAGES["bot_add_limit_exceeded"])
+            logging.info(f"User {user_id} kicked for exceeding bot add limit")
+    elif action_type == "webhook_create":
+        webhook_creates += 1
+        if webhook_creates >= limits["webhook_create"] and guild.me.guild_permissions.kick_members:
+            await guild.kick(member, reason=message.KICK_MESSAGES["webhook_limit_exceeded"])
+            logging.info(f"User {user_id} kicked for exceeding webhook creation limit")
 
     c.execute(
-        '''UPDATE user_actions SET role_changes = ?, channel_edits = ?, channel_deletions = ?, role_creations = ?, channel_creations = ? WHERE user_id = ?''',
-        (role_changes, channel_edits, channel_deletions, role_creations, channel_creations, user_id))
+        '''UPDATE user_actions SET role_changes = ?, channel_edits = ?, channel_deletions = ?, role_creations = ?, channel_creations = ?, bot_adds = ?, webhook_creates = ? WHERE user_id = ?''',
+        (role_changes, channel_edits, channel_deletions, role_creations, channel_creations, bot_adds, webhook_creates, user_id))
     conn.commit()
     conn.close()
 
@@ -119,13 +132,8 @@ async def setlimit(ctx, action: str, new_limit: int):
 @commands.has_permissions(administrator=True)
 async def whitelist(ctx, action: str = None, member: discord.Member = None):
     if action is None or member is None:
-        await ctx.send(
-            "Используйте команду так:\n"
-            "`!whitelist <add/remove> <@пользователь>`\n\n"
-            "**Примеры использования:**\n"
-            "`!whitelist add @Пользователь` — добавить пользователя в белый список.\n"
-            "`!whitelist remove @Пользователь` — удалить пользователя из белого списка."
-        )
+        whitelist_users = ", ".join([f"<@{user_id}>" for user_id in config.WHITELIST])
+        await ctx.send(f"**Команды:**\n`!whitelist <add/remove> <пользователь>`\n\n**Текущий белый список пользователей:**\n{whitelist_users if whitelist_users else 'Список пуст'}")
         return
 
     user_id = member.id
@@ -146,46 +154,65 @@ async def whitelist(ctx, action: str = None, member: discord.Member = None):
         else:
             await ctx.send("Пользователя нет в белом списке.")
     else:
-        await ctx.send(
-            "Неверное действие. Используйте `add` для добавления или `remove` для удаления пользователя из белого списка."
-        )
+        await ctx.send("Неверное действие. Используйте `add` для добавления или `remove` для удаления пользователя из белого списка.")
 
 
-@bot.event
-async def on_guild_channel_create(channel):
-    async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_create):
-        creator = entry.user
-        logging.info(f"Channel {channel.id} created by user {creator.id}")
-        await check_user_limit(channel.guild, creator.id, "channel_create")
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def rolelist(ctx, action: str = None, role: discord.Role = None):
+    if action is None or role is None:
+        whitelist_roles = ", ".join([f"<@&{role_id}>" for role_id in config.ROLE_WHITELIST])
+        await ctx.send(f"**Команды:**\n`!rolelist <add/remove> <роль>`\n\n**Текущий белый список ролей:**\n{whitelist_roles if whitelist_roles else 'Список пуст'}")
+        return
 
-@bot.event
-async def on_guild_channel_delete(channel):
-    async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
-        deleter = entry.user
-        logging.info(f"Channel {channel.id} deleted by user {deleter.id}")
-        await check_user_limit(channel.guild, deleter.id, "channel_delete")
+    role_id = role.id
+    if action == "add":
+        if role_id not in config.ROLE_WHITELIST:
+            config.ROLE_WHITELIST.append(role_id)
+            save_whitelist()
+            await ctx.send(f"Роль {role.mention} добавлена в белый список.")
+            logging.info(f"Role {role_id} added to whitelist by admin {ctx.author.id}")
+        else:
+            await ctx.send("Роль уже в белом списке.")
+    elif action == "remove":
+        if role_id in config.ROLE_WHITELIST:
+            config.ROLE_WHITELIST.remove(role_id)
+            save_whitelist()
+            await ctx.send(f"Роль {role.mention} удалена из белого списка.")
+            logging.info(f"Role {role_id} removed from whitelist by admin {ctx.author.id}")
+        else:
+            await ctx.send("Роли нет в белом списке.")
+    else:
+        await ctx.send("Неверное действие. Используйте `add` для добавления или `remove` для удаления роли из белого списка.")
 
-@bot.event
-async def on_guild_role_create(role):
-    async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_create):
-        creator = entry.user
-        logging.info(f"Role {role.id} created by user {creator.id}")
-        await check_user_limit(role.guild, creator.id, "role_create")
 
 @bot.event
 async def on_member_join(member):
     if member.bot:
-        inviter = member.guild.get_member(member.id)
-        if inviter and guild.me.guild_permissions.kick_members:
-            await member.guild.kick(member)
-            await inviter.kick()
-            await inviter.send(message.KICK_MESSAGES["bot_and_user_kicked"])
+        added_by = None
+        async for entry in member.guild.audit_logs(action=discord.AuditLogAction.bot_add):
+            if entry.target.id == member.id:
+                added_by = entry.user
+                break
+        if added_by and added_by.id not in config.WHITELIST:
+            await member.guild.kick(added_by, reason=message.KICK_MESSAGES["bot_add_limit_exceeded"])
+            await member.guild.kick(member, reason=message.KICK_MESSAGES["bot_add_limit_exceeded"])
+            logging.info(f"User {added_by.id} and bot {member.id} were kicked for bot addition without whitelist access")
 
 @bot.event
 async def on_webhooks_update(channel):
-    webhooks = await channel.webhooks()
-    for webhook in webhooks:
-        await webhook.delete()
-    await channel.guild.owner.send(message.KICK_MESSAGES["webhook_deleted"])
+    guild = channel.guild
+    async for entry in guild.audit_logs(action=discord.AuditLogAction.webhook_create):
+        user = entry.user
+        if user.id not in config.WHITELIST:
+            await check_user_limit(guild, user.id, "webhook_create")
+            webhook = await channel.webhooks()
+            if webhook:
+                await webhook[0].delete()
+                logging.info(f"Webhook created by {user.id} deleted; user kicked if limit exceeded")
+
+@bot.event
+async def on_ready():
+    logging.info(f"Bot is ready and connected as {bot.user}")
 
 bot.run(config.TOKEN)
