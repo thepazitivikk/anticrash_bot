@@ -16,6 +16,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+AUTHORIZED_USER_IDS = {773113930540908554, 532909407345049601}
+
 def load_limits():
     try:
         with open("limits.json", "r") as file:
@@ -110,15 +112,20 @@ async def check_user_limit(guild, user_id, action_type):
     conn.commit()
     conn.close()
 
+def is_authorized_user():
+    async def predicate(ctx):
+        return ctx.author.id in AUTHORIZED_USER_IDS
+    return commands.check(predicate)
+
 @bot.command()
-@commands.has_permissions(administrator=True)
+@is_authorized_user()
 async def catalog(ctx):
     actions = "\n".join([f"{action}: {limit}" for action, limit in limits.items()])
     await ctx.send(f"`>` Список действий и текущие лимиты:\n```{actions}```\n\n"
                    f"Для изменения лимита введите: `!setlimit <действие> <новый_лимит>`")
 
 @bot.command()
-@commands.has_permissions(administrator=True)
+@is_authorized_user()
 async def setlimit(ctx, action: str, new_limit: int):
     if action in limits:
         limits[action] = new_limit
@@ -129,7 +136,7 @@ async def setlimit(ctx, action: str, new_limit: int):
         await ctx.send("`>` Указанное действие не существует. Проверьте команду `!catalog` для доступных действий.")
 
 @bot.command()
-@commands.has_permissions(administrator=True)
+@is_authorized_user()
 async def whitelist(ctx, action: str = None, member: discord.Member = None):
     if action is None or member is None:
         whitelist_users = ", ".join([f"<@{user_id}>" for user_id in config.WHITELIST])
@@ -156,9 +163,8 @@ async def whitelist(ctx, action: str = None, member: discord.Member = None):
     else:
         await ctx.send("Неверное действие. Используйте `add` для добавления или `remove` для удаления пользователя из белого списка.")
 
-
 @bot.command()
-@commands.has_permissions(administrator=True)
+@is_authorized_user()
 async def rolelist(ctx, action: str = None, role: discord.Role = None):
     if action is None or role is None:
         whitelist_roles = ", ".join([f"<@&{role_id}>" for role_id in config.ROLE_WHITELIST])
@@ -184,7 +190,6 @@ async def rolelist(ctx, action: str = None, role: discord.Role = None):
             await ctx.send("Роли нет в белом списке.")
     else:
         await ctx.send("Неверное действие. Используйте `add` для добавления или `remove` для удаления роли из белого списка.")
-
 
 @bot.event
 async def on_member_join(member):
