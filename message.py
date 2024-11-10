@@ -9,6 +9,7 @@ KICK_MESSAGES = {
     "webhook_deleted": "Ваш веб-хук был удален.",
     "channel_delete_limit_exceeded": "User kicked for exceeding the channel deletion limit.",
     "role_create_limit_exceeded": "User kicked for exceeding the role creation limit.",
-    "channel_create_limit_exceeded": "User kicked for exceeding the channel creation limit."
+    "channel_create_limit_exceeded": "User kicked for exceeding the channel creation limit.",
+    "bot_add_limit_exceeded": "Превышен лимит участников, добавленных ботом."
 
 }
